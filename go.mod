@@ -8,7 +8,6 @@ require (
 	github.com/go-ldap/ldap/v3 v3.4.11
 	github.com/gorilla/securecookie v1.1.2
 	github.com/gorilla/sessions v1.4.0
-	github.com/wiltonsr/ldapAuth v0.1.10
 )
 
 require (
