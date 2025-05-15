@@ -2,7 +2,7 @@ module github.com/lehigh-university-libraries/ldapAuth
 
 go 1.23.0
 
-toolchain go1.24.2
+toolchain go1.24.3
 
 require (
 	github.com/go-ldap/ldap/v3 v3.4.11
