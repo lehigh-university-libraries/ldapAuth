@@ -9,7 +9,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -22,21 +22,21 @@ import (
 	"text/template"
 
 	"github.com/go-ldap/ldap/v3"
-	"github.com/gorilla/sessions"
 	"github.com/gorilla/securecookie"
+	"github.com/gorilla/sessions"
 )
 
 // nolint
 var (
 	store *sessions.CookieStore
 	// LoggerDEBUG level.
-	LoggerDEBUG = log.New(ioutil.Discard, "DEBUG: ldapAuth: ", log.Ldate|log.Ltime|log.Lshortfile)
+	LoggerDEBUG = log.New(io.Discard, "DEBUG: ldapAuth: ", log.Ldate|log.Ltime|log.Lshortfile)
 	// LoggerINFO level.
-	LoggerINFO = log.New(ioutil.Discard, "INFO: ldapAuth: ", log.Ldate|log.Ltime|log.Lshortfile)
+	LoggerINFO = log.New(io.Discard, "INFO: ldapAuth: ", log.Ldate|log.Ltime|log.Lshortfile)
 	// LoggerWARNING level.
-	LoggerWARNING = log.New(ioutil.Discard, "WARNING: ldapAuth: ", log.Ldate|log.Ltime|log.Lshortfile)
+	LoggerWARNING = log.New(io.Discard, "WARNING: ldapAuth: ", log.Ldate|log.Ltime|log.Lshortfile)
 	// LoggerERROR level.
-	LoggerERROR = log.New(ioutil.Discard, "ERROR: ldapAuth: ", log.Ldate|log.Ltime|log.Lshortfile)
+	LoggerERROR = log.New(io.Discard, "ERROR: ldapAuth: ", log.Ldate|log.Ltime|log.Lshortfile)
 )
 
 type LdapServerConfig struct {
@@ -75,14 +75,6 @@ type Config struct {
 	AllowedGroups              []string           `json:"allowedGroups,omitempty" yaml:"allowedGroups,omitempty"`
 	AllowedUsers               []string           `json:"allowedUsers,omitempty" yaml:"allowedUsers,omitempty"`
 	Username                   string
-	// params below are deprecated use 'ServerList' instead
-	URL                  string `json:"url,omitempty" yaml:"url,omitempty"`
-	Port                 uint16 `json:"port,omitempty" yaml:"port,omitempty"`
-	StartTLS             bool   `json:"startTls,omitempty" yaml:"startTls,omitempty"`
-	InsecureSkipVerify   bool   `json:"insecureSkipVerify,omitempty" yaml:"insecureSkipVerify,omitempty"`
-	MinVersionTLS        string `json:"minVersionTls,omitempty" yaml:"minVersionTls,omitempty"`
-	MaxVersionTLS        string `json:"maxVersionTls,omitempty" yaml:"maxVersionTls,omitempty"`
-	CertificateAuthority string `json:"certificateAuthority,omitempty" yaml:"certificateAuthority,omitempty"`
 }
 
 // CreateConfig creates the default plugin configuration.
@@ -102,7 +94,7 @@ func CreateConfig() *Config {
 		BindDN:                     "",
 		BindPassword:               "",
 		ForwardUsername:            true,
-		ForwardUsernameHeader:      "Username",
+		ForwardUsernameHeader:      "X-Remote-User",
 		ForwardAuthorization:       false,
 		ForwardExtraLdapHeaders:    false,
 		WWWAuthenticateHeader:      true,
@@ -111,8 +103,6 @@ func CreateConfig() *Config {
 		AllowedGroups:              nil,
 		AllowedUsers:               nil,
 		Username:                   "",
-		// deprecated use 'ServerList' instead
-		URL: "",
 	}
 }
 
@@ -128,23 +118,6 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 	SetLogger(config.LogLevel)
 
 	LoggerINFO.Printf("Starting %s Middleware...", name)
-
-	// It means the user is passing the URL directly
-	if config.URL != "" {
-		LoggerWARNING.Printf("Passing LDAP Server Attributes directly is deprecated, please use 'ServerList' instead")
-		server := LdapServerConfig{
-			URL:                  config.URL,
-			Port:                 config.Port,
-			Weight:               1,
-			StartTLS:             config.StartTLS,
-			InsecureSkipVerify:   config.InsecureSkipVerify,
-			MinVersionTLS:        config.MinVersionTLS,
-			MaxVersionTLS:        config.MaxVersionTLS,
-			CertificateAuthority: config.CertificateAuthority,
-		}
-
-		config.ServerList = append(config.ServerList, server)
-	}
 
 	// Rank LDAP servers based on weight. Higher weight, higher precedence
 	sort.Slice(config.ServerList, func(i, j int) bool {
@@ -162,7 +135,7 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 	} else {
 		key = securecookie.GenerateRandomKey(64)
 		if key == nil {
-			return nil, fmt.Errorf("Error generating random key")
+			return nil, fmt.Errorf("error generating random key")
 		}
 	}
 	store = sessions.NewCookieStore(key)
@@ -233,7 +206,7 @@ func (la *LdapAuth) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
 	for i, server := range la.config.ServerList {
 		attempt := fmt.Sprintf("Attempt %d/%d", i+1, len(la.config.ServerList))
-		LoggerDEBUG.Printf(attempt)
+		LoggerDEBUG.Print(attempt)
 
 		if conn, err = Connect(server); err == nil {
 			serverInUse = server
@@ -244,7 +217,7 @@ func (la *LdapAuth) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		errStrings = append(errStrings, fmt.Sprintf("%s: %v", attempt, err))
 
 		if i == len(la.config.ServerList)-1 {
-			err = fmt.Errorf(strings.Join(errStrings, "\n"))
+			err = errors.New(strings.Join(errStrings, "\n"))
 			RequireAuth(rw, req, la.config, err)
 			return
 		}
@@ -577,7 +550,7 @@ func SearchMode(conn *ldap.Conn, config *Config) (*ldap.SearchResult, error) {
 	case len(result.Entries) < 1:
 		return nil, fmt.Errorf("search filter return empty result")
 	default:
-		return nil, fmt.Errorf(fmt.Sprintf("search filter return multiple entries (%d)", len(result.Entries)))
+		return nil, fmt.Errorf("search filter return multiple entries (%d)", len(result.Entries))
 	}
 }
 
